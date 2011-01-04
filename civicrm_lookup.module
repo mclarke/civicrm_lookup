@@ -1,0 +1,404 @@
+<?php
+function civicrm_lookup_menu() {
+  $items['admin/settings/civicrm_lookup'] =
+    array(
+          'title' => 'Postal Code To Riding Mapper',
+          'description' => 'Connect the riding lookup to a civiCRM custom field. Run a process to mass-update missing riding info.',
+          'page callback' => 'civicrm_lookup_admin_settings',
+          'access arguments' => array('administer site configuration'),
+          'type' => MENU_NORMAL_ITEM, // optional
+          );
+  return $items;
+}
+
+function civicrm_lookup_help( $path, $arg ) {
+  switch ($path) {
+  case 'admin/modules#description':
+    return t('Simple CA Postal Code To Riding Lookup.');
+  }
+}
+
+function civicrm_lookup_clean_postal($postal_code) {
+  $postal_code = strtoupper($postal_code);
+
+  $pattern = Array(); $replacement = Array();
+
+  $pattern[] = "/ /"; $replacement[] = "";
+  $pattern[] = "/-/"; $replacement[] = "";
+  $pattern[] = "/O/"; $replacement[] = "0";
+  $pattern[] = "/I/"; $replacement[] = "1";
+  $pattern[] = '/\!/'; $replacement[] = "1";
+  $pattern[] = '/\@/'; $replacement[] = "2";
+  $pattern[] = '/\#/'; $replacement[] = "3";
+  $pattern[] = '/\$/'; $replacement[] = "4";
+  $pattern[] = '/\%/'; $replacement[] = "5";
+  $pattern[] = '/\^/'; $replacement[] = "6";
+  $pattern[] = '/\&/'; $replacement[] = "7";
+  $pattern[] = '/\*/'; $replacement[] = "8";
+  $pattern[] = '/\(/'; $replacement[] = "9";
+  $pattern[] = '/\)/'; $replacement[] = "0";
+  
+  $postal_code = preg_replace($pattern, $replacement, $postal_code);
+
+  return $postal_code;
+}
+
+//Make sure postal code looks like a proper CA Federal PC
+//function currently assumes that pc has already been "cleaned"
+//as in civicrm_lookup_clean_postal()
+function civicrm_lookup_validate_postal_code($postal_code) {
+  $pattern = "/^[A-Z]\d[A-Z]\s*\d[A-Z]\d$/";
+  return preg_match($pattern, $postal_code);
+}
+
+function civicrm_lookup_do_lookup($postal_code) {
+  $ed = NULL;
+  $pc = civicrm_lookup_clean_postal($postal_code);
+  $count = db_result(db_query("SELECT COUNT(*) FROM {postal_codes} WHERE postal_code = '%s'", $pc));
+  $sql = "SELECT ed FROM {postal_codes} WHERE postal_code = '%s'";
+  $res1 = db_query($sql, $pc);
+
+  if ($count == 0) {
+    //no result
+    $ed = NULL;
+  }
+  elseif ($count > 1) {
+    //multiple results, use city to refine automatically
+
+    //default to the first one. hopefully we can improve on this below
+    $ed = db_fetch_object($res1);
+    
+    //wait until I see the StatsCan data... may be able to improve algorithm
+
+  }
+  else {
+    //one result. easy.
+    $ed = db_fetch_object($res1);
+  }
+
+  return $ed;
+}
+
+function civicrm_lookup_lookup_by_ed($riding_id) {
+  global $language;
+
+  if ($riding_id) {
+    $field_name = ($language->language == 'fr') ? 'name_fr' : 'name_en';
+
+    $sql = "SELECT %s FROM {ridings} WHERE num = '%s'";
+    return db_result(db_query($sql, $field_name, $riding_id));
+  }
+  return NULL;
+}
+
+function civicrm_lookup_admin_settings() {
+  $output = '';
+  //Return the rendered form
+  $output .= drupal_get_form('civicrm_lookup_admin_settings_form', array());
+  $output .= drupal_get_form('civicrm_lookup_bulk_riding_form', array());  
+  return $output;
+}
+
+function civicrm_lookup_admin_settings_form($settings = array()) {
+
+  if (!isset($settings['riding_fld']))
+    $settings['riding_fld']
+      = variable_get('riding_fld', NULL);
+
+  $form['mappings'] =
+    array(
+          '#type' => 'fieldset',
+          '#title' => t('Mapping To CiviCRM Fields'),
+          '#weight' => 0,
+          '#collapsible' => TRUE,
+          '#collapsed' => FALSE
+          );
+
+  $form['mappings']['riding_fld'] =
+    array('#type' => 'textfield',
+          '#title' => t('Field Holding Riding ID'),
+          '#default_value' =>
+          $settings['riding_fld'],
+          '#size' => 25
+          );
+
+   $form['mappings']['submit'] =
+     array('#type' => 'submit',
+         '#value' => t('Save Settings')
+      );
+
+   return $form;
+}
+
+function civicrm_lookup_admin_settings_form_submit($form, &$form_state) {
+  if (isset($form_state['values']['riding_fld'])) {
+    drupal_set_message('Saved...');
+    variable_set('riding_fld', $form_state['values']['riding_fld'], "huh?");
+  }
+}
+
+function civicrm_lookup_clean_addr_fields( &$contact_data ) {
+  // This cleans the address fields with a couple simple operations
+  if (isset($contact_data['address'])) {
+    foreach ($contact_data['address'] as &$address) {
+      if (isset($address['is_primary']) && $address['is_primary'] == 1) {
+
+        //Fix the case on the fields
+        $address['postal_code'] = strtoupper($address['postal_code']);
+
+        // clean up those durty durty postal codes.  so durty.
+        if ($address['postal_code']) {
+          if(substr($address['postal_code'], 0, 1) == 'Q') {
+            //special trick to force riding lookup, add a q to the front of the postal code
+            $contact_data['lookup_riding'] = TRUE;
+            $address['postal_code'] = substr($address['postal_code'], 1);
+          }
+          $address['postal_code'] = civicrm_lookup_clean_postal($address['postal_code']);
+          $address['postal_code'] = substr($address['postal_code'], 0, 3) ." ". substr($address['postal_code'], -3, 3);
+        }
+      }
+    }
+  }
+}
+
+//Data isn't flat, so we need to root around a bit to find the postal code
+function civicrm_lookup_extract_postal_code($contact_data) {
+  global $user;
+  $pc = NULL;
+  //if ($user->uid == 1) { drupal_set_message('<pre>Contact Data: '. print_r($contact_data, TRUE) ."</pre>"); }
+  
+  if (isset($contact_data['address'])) {
+    foreach ($contact_data['address'] as $address) {
+      if (isset($address['is_primary']) && ($address['is_primary'] == 1) && ($address['postal_code'])) {
+        return $address['postal_code'];
+      } else {
+        // Grab any postal code, but keep looking for a primary
+        if ($address['postal_code']) {
+          $pc = $address['postal_code'];
+        }
+      }
+    }
+  }
+  return $pc;
+}
+
+// Dig out the old postal code from the obj
+function civicrm_lookup_extract_old_postal_code($obj_id) {
+  require_once('api/v2/Contact.php');
+  $params    = array('contact_id' => $obj_id);
+  $values = &civicrm_contact_get( $params );
+  return $values[$obj_id]['postal_code'];
+}
+
+/**
+ * Post civi hook for actions after entity add/update
+ */
+
+/* 
+function civicrm_lookup_civicrm_post( $op, $obj_name, $obj_id, &$obj_ref ) {
+  global $user;
+  switch ($obj_name) {
+  case 'Individual':
+  case 'Household':
+  case 'Organization':
+  case 'Contribution':
+
+  break;
+ }
+ return TRUE;
+}
+*/
+
+/**
+ * CiviCRM Pre Hook.  We can add or alter fields
+ * about to be inserted into a new or modified contact
+ *
+ */
+function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
+  global $user;
+  global $language;
+  
+  //if ($user->uid == 1) { drupal_set_message($op .': '. $obj_name .': '. print_r($obj_ref, TRUE)); }
+
+  $riding_fld = variable_get('riding_fld', NULL);
+
+  switch ($obj_name) {
+  case 'Individual':
+  case 'Household':
+  case 'Organization':
+    if ($op == 'create' or $op == 'edit') {
+      //Data hygiene
+      civicrm_lookup_clean_addr_fields(&$obj_ref);
+        
+      //Get postal code(s) to work with
+      $postal_code = civicrm_lookup_extract_postal_code($obj_ref);
+      if ($obj_id) {
+        //if editing existing record
+        $old_postal_code = civicrm_lookup_extract_old_postal_code($obj_id);
+      }
+
+      /* Perfom lookup of riding number against the EC lookup table if:
+       * - there's a postal code!
+       * - postal code is different from previous value ( or is new record )
+       * - a manual request was made by prepending a "q" to postal code
+       */
+      if ($postal_code && (($postal_code != $old_postal_code) || $obj_ref['lookup_riding'])) {
+        $riding_info = civicrm_lookup_do_lookup($postal_code);
+        if ($riding_info) {
+          //grab the riding name from the riding list
+          $ed_name = civicrm_lookup_lookup_by_ed($riding_info->ed);
+          $riding_key = 'custom_'. $riding_fld;
+          $obj_ref[$riding_key] = $riding_info->ed;
+          if ($user->uid) {
+            CRM_Core_Session::setStatus(t('Riding set to: ') . $ed_name .".");
+          }
+        }
+        else {
+          if ($user->uid) {
+            CRM_Core_Session::setStatus(t('Postal code not found.'));
+          }
+        }
+      }
+    }
+    break;
+  }
+}
+
+function civicrm_lookup_bulk_riding_form($form_state, $report) {
+
+ $form['operations'] =
+    array(
+          '#type' => 'fieldset',
+          '#title' => t('Operations'),
+          '#weight' => 1,
+          '#collapsible' => TRUE,
+          '#collapsed' => FALSE
+          );
+  $output = '<p>'. t("This feature assigns riding lookup values on all contacts in your civiCRM database that do not already have riding values. May take a long time on a new database.") .'</p>';
+  $output .= '<p>'. t("Also, it will output a list of postal codes that fail on lookup.") .'</p>';
+  $form['operations']['description'] = array(
+    '#value' => $output
+    );
+  $form['operations']['submit'] = array(
+    '#type' => 'submit', 
+    '#value' => t('Update missing riding data in CRM...'),
+    );
+
+  return $form;
+}
+
+function civicrm_lookup_bulk_riding_form_submit( $form, &$form_state ) { 
+  $batch = array(
+    'operations' => array(
+      array('civicrm_lookup_bulk_riding_batch', array()),
+      ),
+    'finished' => 'civicrm_lookup_bulk_riding_batch_finished',
+    'title' => t('Checking for missing ridings on contacts'),
+    'init_message' => t('Preparing to assign ridings to contacts...', array('%mode'=> $mode)),
+  );
+  batch_set($batch);
+  
+}
+
+function civicrm_lookup_bulk_riding_batch( &$context ) {
+  // we need the CRM!!
+  civicrm_initialize();
+  require_once('api/v2/Contact.php');
+  $riding_fld = variable_get('riding_fld', NULL);
+  $riding_fld_name = 'custom_'. $riding_fld;
+  
+  //drupal_set_message(print_r($context['sandbox'], TRUE));
+
+  // Initialization
+  if (empty($context['sandbox'])) {
+    // First time!
+    $progress = 0;
+    
+    //Grab the database info based on custom field ID
+    $sql = "SELECT table_name, column_name
+      FROM `civicrm_custom_field` AS ccf
+      LEFT JOIN civicrm_custom_group AS ccg ON ( ccf.custom_group_id = ccg.id )
+      WHERE ccf.id = $riding_fld
+    ";
+    
+    $dao =& CRM_Core_DAO::executeQuery( $sql );
+    $dao->fetch();
+    $cv_table = $dao->table_name;
+    $cv_col = $dao->column_name;
+        
+    //Grab contacts without riding value, but with postal code
+    $sql = "
+    SELECT cc.id, ca.postal_code 
+    FROM civicrm_contact AS cc
+    LEFT JOIN $cv_table AS cv ON (cc.id = cv.entity_id)
+    LEFT JOIN civicrm_address AS ca ON (cc.id = ca.contact_id)
+    WHERE ($cv_col IS NULL OR $cv_col = 0) AND ca.is_primary = 1 AND ca.postal_code != ''";
+    
+    //drupal_set_message($sql);
+  
+    $dao =& CRM_Core_DAO::executeQuery( $sql );
+  
+    while ($dao->fetch()) {
+      $context['sandbox']['data'][] = array('id' => $dao->id, 'postal' => $dao->postal_code);
+    }
+    
+    $total = count($context['sandbox']['data']); 
+    //drupal_set_message($total);
+    $context['sandbox']['max'] = $total;
+    $context['results']['max'] = $total;
+    $context['results']['wins'] = 0;
+    $context['results']['fails'] = 0;
+  }
+  else {
+    // Subsequent runs, retrieve progress
+    $progress = $context['sandbox']['progress'];
+  }
+
+  //Process this batch of contacts
+  $limit = 100;
+  $count = 0;
+  
+  while (($progress < $context['sandbox']['max']) && ($count < $limit)) {
+    //lookup riding for the contact
+    $postal = $context['sandbox']['data'][$progress]['postal'];
+    $riding = civicrm_lookup_do_lookup($postal);
+    
+    if ($riding->ed) {
+      //riding found, update the record in CRM
+      require_once 'CRM/Core/BAO/CustomValueTable.php';
+      $set_params = array('entityID' => $context['sandbox']['data'][$progress]['id'], $riding_fld_name => $riding->ed);
+      CRM_Core_BAO_CustomValueTable::setValues($set_params);      
+      $context['results']['wins']++;
+    } 
+    else {
+      // No riding found
+      $context['results']['fails']++;
+      $context['results']['errors'][] = $context['sandbox']['data'][$progress]['id']. " @ ". $postal;
+    }
+    $count++;
+    $progress++;
+  }
+    
+  if ($progress != $context['sandbox']['max']) {
+    // We are not done yet, setup some values for next iteration
+    $context['finished'] = $progress / $context['sandbox']['max'];
+    // Store progress for next iteration
+    $context['sandbox']['progress'] = $progress;
+    //Set the message under the progress bar
+    $context['message'] = 'Contact ID: '. $context['sandbox']['data'][$progress]['id'];
+  }
+  //sleep(1);
+}
+
+function civicrm_lookup_bulk_riding_batch_finished($success, $results, $operations) {
+  // Display Summary
+  drupal_set_message(t('Total records: %max, Wins: %wins, Fails: %fails.', array('%max' => $results['max'], '%wins' => $results['wins'], '%fails' => $results['fails'])));
+  
+  // Print errors to screen
+  foreach ($results['errors'] as $k => $result) {
+    if ($k) {
+      $message = t('Failed: %name.', array('%name' => $result));
+      drupal_set_message($message);
+    }
+  }
+}

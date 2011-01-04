@@ -1,0 +1,5 @@
+name = civiCRM Lookup Field Support
+description = "Provides lookups for civicrm fields"
+dependencies[] = civicrm
+package = Other
+core = 6.x
