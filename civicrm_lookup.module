@@ -116,7 +116,7 @@ function civicrm_lookup_admin_settings_form($settings = array()) {
 
   $form['mappings']['riding_fld'] =
     array('#type' => 'textfield',
-          '#title' => t('Field Holding Riding ID'),
+          '#title' => t('Riding Field ID'),
           '#default_value' =>
           $settings['riding_fld'],
           '#size' => 25
