@@ -137,32 +137,44 @@ function civicrm_lookup_admin_settings_form_submit($form, &$form_state) {
   }
 }
 
-function civicrm_lookup_clean_addr_fields( &$contact_data ) {
-  // This cleans the address fields with a couple simple operations
-  if (isset($contact_data['address'])) {
-    foreach ($contact_data['address'] as &$address) {
-      if (isset($address['is_primary']) && $address['is_primary'] == 1) {
+function civicrm_lookup_clean_addr_fields($obj_name, &$contact_data ) {
+  $pc = NULL;
 
-        //Fix the case on the fields
-        $address['postal_code'] = strtoupper($address['postal_code']);
-
-        // clean up those durty durty postal codes.  so durty.
-        if ($address['postal_code']) {
-          if(substr($address['postal_code'], 0, 1) == 'Q') {
-            //special trick to force riding lookup, add a q to the front of the postal code
-            $contact_data['lookup_riding'] = TRUE;
-            $address['postal_code'] = substr($address['postal_code'], 1);
+  if ($obj_name == 'Profile') {
+    $pc = &$contact_data['postal_code-Primary'];
+  } 
+  else {
+    // Individuals etc...
+    if (isset($contact_data['address'])) {
+      foreach ($contact_data['address'] as &$address) {
+        if (isset($address['is_primary']) && ($address['is_primary'] == 1) && ($address['postal_code'])) {
+          $pc = &$address['postal_code'];
+          break;
+        } else {
+          // Grab any postal code, but keep looking for a primary
+          if ($address['postal_code']) {
+            $pc = &$address['postal_code'];
           }
-          $address['postal_code'] = civicrm_lookup_clean_postal($address['postal_code']);
-          $address['postal_code'] = substr($address['postal_code'], 0, 3) ." ". substr($address['postal_code'], -3, 3);
         }
       }
     }
   }
+  
+  // clean up those durty durty postal codes.  so durty.
+  if ($pc) {
+    $pc = strtoupper($pc);
+    if(substr($pc, 0, 1) == 'Q') {
+      //special trick to force riding lookup, add a q to the front of the postal code
+      $contact_data['lookup_riding'] = TRUE;
+      $pc = substr($pc, 1);
+    }
+    $pc = civicrm_lookup_clean_postal($pc);
+    $pc = substr($pc, 0, 3) ." ". substr($pc, -3, 3);
+  }
 }
 
 //Data isn't flat, so we need to root around a bit to find the postal code
-function civicrm_lookup_extract_postal_code($contact_data) {
+function civicrm_lookup_get_postal_code($contact_data) {
   global $user;
   $pc = NULL;
   //if ($user->uid == 1) { drupal_set_message('<pre>Contact Data: '. print_r($contact_data, TRUE) ."</pre>"); }
@@ -179,35 +191,20 @@ function civicrm_lookup_extract_postal_code($contact_data) {
       }
     }
   }
+  else {
+    // If the object is a profile
+    $pc = $contact_data['postal_code-Primary'];
+  }
   return $pc;
 }
 
 // Dig out the old postal code from the obj
-function civicrm_lookup_extract_old_postal_code($obj_id) {
+function civicrm_lookup_get_old_postal_code($obj_id) {
   require_once('api/v2/Contact.php');
   $params    = array('contact_id' => $obj_id);
   $values = &civicrm_contact_get( $params );
   return $values[$obj_id]['postal_code'];
 }
-
-/**
- * Post civi hook for actions after entity add/update
- */
-
-/* 
-function civicrm_lookup_civicrm_post( $op, $obj_name, $obj_id, &$obj_ref ) {
-  global $user;
-  switch ($obj_name) {
-  case 'Individual':
-  case 'Household':
-  case 'Organization':
-  case 'Contribution':
-
-  break;
- }
- return TRUE;
-}
-*/
 
 /**
  * CiviCRM Pre Hook.  We can add or alter fields
@@ -218,7 +215,7 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
   global $user;
   global $language;
   
-  //if ($user->uid == 1) { drupal_set_message($op .': '. $obj_name .': '. print_r($obj_ref, TRUE)); }
+  // watchdog('civiCRM', $op .': '. $obj_name .': '. print_r($obj_ref, TRUE));
 
   $riding_fld = variable_get('riding_fld', NULL);
 
@@ -226,29 +223,34 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
   case 'Individual':
   case 'Household':
   case 'Organization':
+  case 'Profile':
     if ($op == 'create' or $op == 'edit') {
-      //Data hygiene
-      civicrm_lookup_clean_addr_fields(&$obj_ref);
+      // Data hygiene
+      civicrm_lookup_clean_addr_fields($obj_name, &$obj_ref);
         
-      //Get postal code(s) to work with
-      $postal_code = civicrm_lookup_extract_postal_code($obj_ref);
+      // Get postal code(s) to work with
+      $postal_code = civicrm_lookup_get_postal_code($obj_ref);
       if ($obj_id) {
         //if editing existing record
-        $old_postal_code = civicrm_lookup_extract_old_postal_code($obj_id);
+        $old_postal_code = civicrm_lookup_get_old_postal_code($obj_id);
       }
-
+       watchdog('civiCRM', 'PC: '. $postal_code . ' OPC: '. $old_postal_code);
+      
       /* Perfom lookup of riding number against the EC lookup table if:
        * - there's a postal code!
        * - postal code is different from previous value ( or is new record )
        * - a manual request was made by prepending a "q" to postal code
        */
-      if ($postal_code && (($postal_code != $old_postal_code) || $obj_ref['lookup_riding'])) {
+      if ($postal_code && ($postal_code != $old_postal_code || $obj_ref['lookup_riding'])) {
+    	  // Set the riding field automatically based on postal code value.   
         $riding_info = civicrm_lookup_do_lookup($postal_code);
+        
         if ($riding_info) {
-          //grab the riding name from the riding list
-          $ed_name = civicrm_lookup_lookup_by_ed($riding_info->ed);
           $riding_key = 'custom_'. $riding_fld;
           $obj_ref[$riding_key] = $riding_info->ed;
+  
+          //grab the riding name from the riding list
+          $ed_name = civicrm_lookup_lookup_by_ed($riding_info->ed);
           if ($user->uid) {
             CRM_Core_Session::setStatus(t('Riding set to: ') . $ed_name .".");
           }
@@ -260,8 +262,33 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
         }
       }
     }
+    
+    //watchdog('civiCRM', $op .': '. $obj_name .': '. print_r($obj_ref, TRUE));
     break;
   }
+}
+
+/**
+ * Post civi hook for actions after entity add/update
+ */
+
+function civicrm_lookup_civicrm_post( $op, $obj_name, $obj_id, &$obj_ref ) {
+  global $user;
+  $riding_fld = variable_get('riding_fld', NULL);
+  
+  //watchdog('civiCRM', $op .': '. $obj_name .': '. print_r($obj_ref, TRUE));  
+
+  switch ($obj_name) {
+  case 'Individual':
+  case 'Household':
+  case 'Organization':  
+  break;
+  
+  case 'Contribution':
+
+  break;
+ }
+ return TRUE;
 }
 
 function civicrm_lookup_bulk_riding_form($form_state, $report) {
