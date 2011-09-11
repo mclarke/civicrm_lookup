@@ -102,8 +102,7 @@ function civicrm_lookup_admin_settings() {
 function civicrm_lookup_admin_settings_form($settings = array()) {
 
   if (!isset($settings['riding_fld']))
-    $settings['riding_fld']
-      = variable_get('riding_fld', NULL);
+    $settings['riding_fld'] = variable_get('riding_fld', NULL);
 
   $form['mappings'] =
     array(
@@ -218,6 +217,7 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
   // watchdog('civiCRM', $op .': '. $obj_name .': '. print_r($obj_ref, TRUE));
 
   $riding_fld = variable_get('riding_fld', NULL);
+  $riding_key = 'custom_'. $riding_fld;
 
   switch ($obj_name) {
   case 'Individual':
@@ -230,9 +230,15 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
         
       // Get postal code(s) to work with
       $postal_code = civicrm_lookup_get_postal_code($obj_ref);
-      if ($obj_id) {
-        //if editing existing record
+      if ($obj_id) { //if editing existing record
+        // Grab the existing postal code
         $old_postal_code = civicrm_lookup_get_old_postal_code($obj_id);
+        
+        // Grab the existing riding
+        require_once 'CRM/Core/BAO/CustomValueTable.php';
+        $get_params = array('entityID' => $obj_id, $riding_key => 1);
+        $values = CRM_Core_BAO_CustomValueTable::getValues($get_params);
+        $obj_ref[$riding_key] = $values[$riding_key];
       }
        watchdog('civiCRM', 'PC: '. $postal_code . ' OPC: '. $old_postal_code);
       
@@ -245,8 +251,7 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
     	  // Set the riding field automatically based on postal code value.   
         $riding_info = civicrm_lookup_do_lookup($postal_code);
         
-        if ($riding_info) {
-          $riding_key = 'custom_'. $riding_fld;
+        if ($riding_info) {   
           $obj_ref[$riding_key] = $riding_info->ed;
   
           //grab the riding name from the riding list
