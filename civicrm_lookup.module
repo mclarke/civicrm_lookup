@@ -214,7 +214,7 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
   global $user;
   global $language;
   
-  // watchdog('civiCRM', $op .': '. $obj_name .': '. print_r($obj_ref, TRUE));
+  //watchdog('civiCRM', "LOOKUP: $op: $obj_name : ". print_r($obj_ref, TRUE));
 
   $riding_fld = variable_get('riding_fld', NULL);
   $riding_key = 'custom_'. $riding_fld;
@@ -238,9 +238,11 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
         require_once 'CRM/Core/BAO/CustomValueTable.php';
         $get_params = array('entityID' => $obj_id, $riding_key => 1);
         $values = CRM_Core_BAO_CustomValueTable::getValues($get_params);
-        $obj_ref[$riding_key] = $values[$riding_key];
+        if ($values[$riding_key]) {
+          $obj_ref['old_riding'] = $values[$riding_key];
+        }
       }
-       watchdog('civiCRM', 'PC: '. $postal_code . ' OPC: '. $old_postal_code);
+      watchdog('civiCRM', 'PC: '. $postal_code . ' OPC: '. $old_postal_code);
       
       /* Perfom lookup of riding number against the EC lookup table if:
        * - there's a postal code!
@@ -266,9 +268,14 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
           }
         }
       }
+      
+      if (!isset($obj_ref[$riding_key]) && isset($obj_ref['old_riding'])) {
+        // set the existing riding in riding field in case it's needed down the line (of hooks)
+        $obj_ref[$riding_key] = $obj_ref['old_riding'];
+      }
     }
     
-    //watchdog('civiCRM', $op .': '. $obj_name .': '. print_r($obj_ref, TRUE));
+    watchdog('civiCRM', $op .': '. $obj_name .': '. print_r($obj_ref, TRUE));
     break;
   }
 }
