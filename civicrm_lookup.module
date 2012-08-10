@@ -199,10 +199,10 @@ function civicrm_lookup_get_postal_code($contact_data) {
 
 // Dig out the old postal code from the obj
 function civicrm_lookup_get_old_postal_code($obj_id) {
-  require_once('api/v2/Contact.php');
-  $params    = array('contact_id' => $obj_id);
-  $values = &civicrm_contact_get( $params );
-  return $values[$obj_id]['postal_code'];
+  require_once 'api/api.php';
+  $params    = array('version' => '3', 'contact_id' => $obj_id, 'return.postal_code' => '1');
+  $values = civicrm_api('Contact', 'getsingle', $params);
+  return $values['postal_code'];
 }
 
 /**
@@ -290,7 +290,7 @@ function civicrm_lookup_civicrm_pre( $op, $obj_name, $obj_id, &$obj_ref ) {
 /**
  * Post civi hook for actions after entity add/update
  */
-
+/*
 function civicrm_lookup_civicrm_post( $op, $obj_name, $obj_id, &$obj_ref ) {
   global $user;
   $riding_fld = variable_get('riding_fld', NULL);
@@ -309,7 +309,7 @@ function civicrm_lookup_civicrm_post( $op, $obj_name, $obj_id, &$obj_ref ) {
  }
  return TRUE;
 }
-
+*/
 function civicrm_lookup_bulk_riding_form($form_state, $report) {
 
  $form['operations'] =
