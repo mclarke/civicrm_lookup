@@ -349,7 +349,8 @@ function civicrm_lookup_bulk_riding_form_submit( $form, &$form_state ) {
 function civicrm_lookup_bulk_riding_batch( &$context ) {
   // we need the CRM!!
   civicrm_initialize();
-  require_once('api/v2/Contact.php');
+  require_once 'api/api.php';
+  
   $riding_fld = variable_get('riding_fld', NULL);
   $riding_fld_name = 'custom_'. $riding_fld;
   
